@@ -1,5 +1,8 @@
 # Blink rolling backup to Google Drive
 
+For the continuation review, deployment fingerprints, real-transfer validation,
+and Apps Script/Cloud Run tradeoffs, see [PROJECT_REVIEW.md](PROJECT_REVIEW.md).
+
 ## Browser dashboard (Windows 10)
 
 Double-click **START_DASHBOARD.bat**. It installs any missing Python dependencies,
@@ -241,7 +244,7 @@ the extracted live app folder or credential files to a public repository.
 
 ## Validation performed
 
-The package includes 39 offline tests for dashboard controls, worker supervision, sign-in state handling,
+The package includes 41 offline tests for dashboard controls, worker supervision, sign-in state handling,
 request protections, retention ordering, strict cloud size
 enforcement, deletion safeguards, independent retries, recovery across restarts,
 late/missing source clips, truncated downloads, Drive outages, local-buffer limits,
@@ -250,6 +253,11 @@ imports were also checked. A real generated H.264 MP4 was accepted and a copy
 with a truncated media-data box was rejected by the updated validator.
 No live Blink or Google account credentials were used: authentication, actual
 XR+ downloads, Drive uploads, and Task Scheduler still need your local smoke test.
+
+The 2026-10-27 continuation review also verifies that missing sources cannot
+consume the download-attempt batch and explicitly closes dashboard SQLite
+connections to avoid Windows file locks. All 41 offline tests passed; see the
+review for the validation environment and the remaining live-test requirements.
 
 Run offline tests: `python -m unittest discover -s tests -v`.
 

@@ -135,6 +135,30 @@ class RetryQueueTests(unittest.TestCase):
         self.assertEqual(result["missing_from_latest_manifest"], 0)
         self.assertTrue(self.journal.seen(backup.clip_key(module, clip)))
 
+    def test_missing_sources_do_not_consume_download_batch(self):
+        available, absent = Clip(1), Clip(2)
+        module = Module([available])
+        missing_key = backup.clip_key(module, absent)
+        self.journal.discover(missing_key, "absent.mp4",
+                              backup.recorded_time(absent), absent.size)
+        self.settings["max_clips_per_cycle"] = 1
+        report = self.cycle(module)
+        self.assertEqual(available.calls, 1)
+        self.assertTrue(self.journal.seen(backup.clip_key(module, available)))
+        self.assertFalse(self.journal.seen(missing_key))
+        self.assertEqual(report["missing_from_latest_manifest"], 1)
+        self.assertEqual(report["counts"]["uploaded"], 1)
+
+    def test_download_batch_still_limits_actual_attempts(self):
+        older, newer = Clip(1), Clip(2)
+        module = Module([older, newer])
+        self.settings["max_clips_per_cycle"] = 1
+        report = self.cycle(module)
+        self.assertEqual(newer.calls, 1)
+        self.assertEqual(older.calls, 0)
+        self.assertEqual(report["counts"]["uploaded"], 1)
+        self.assertEqual(report["counts"]["download"], 1)
+
     def test_truncated_download_is_never_marked_complete(self):
         clip = Clip(1, short=True)
         module = Module([clip])

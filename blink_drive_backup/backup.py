@@ -146,10 +146,13 @@ class Journal:
             if visible:
                 self.db.execute("UPDATE jobs SET last_seen=?, missing_since=NULL WHERE key=?", (time.time(), key))
 
-    def ready(self, stage, limit):
+    def ready(self, stage, limit=None):
         column = "next_download" if stage == "download" else "next_upload"
-        return list(self.db.execute(f"""SELECT * FROM jobs WHERE stage=? AND {column}<=?
-            ORDER BY {column}, recorded DESC, key LIMIT ?""", (stage, time.time(), limit)))
+        # Stream rows so unavailable sources can be skipped without loading the
+        # whole queue or consuming slots intended for actual transfer attempts.
+        return self.db.execute(f"""SELECT * FROM jobs WHERE stage=? AND {column}<=?
+            ORDER BY {column}, recorded DESC, key LIMIT ?""",
+            (stage, time.time(), -1 if limit is None else limit))
 
     def downloaded(self, key):
         with self.db:
@@ -423,7 +426,8 @@ async def sync_cycle(blink, module, drive, journal, settings):
     staging = STATE / "staging"
     max_staging = settings.get("max_staging_bytes", 10_000_000_000)
     minimum_free = settings.get("min_free_disk_bytes", 1_000_000_000)
-    for job in journal.ready("download", settings["max_clips_per_cycle"]):
+    download_attempts = 0
+    for job in journal.ready("download"):
         if stop_requested():
             break
         key = job["key"]
@@ -435,6 +439,8 @@ async def sync_cycle(blink, module, drive, journal, settings):
         if not scan_ok or key not in visible:
             # Don't equate a temporary omission (or removed source) with success.
             continue
+        if download_attempts >= settings["max_clips_per_cycle"]:
+            break
         used = sum(p.stat().st_size for p in staging.glob("*.*") if p.is_file())
         expected = job["expected_size"]
         # Manifest values may be rounded or describe a different representation.
@@ -444,6 +450,7 @@ async def sync_cycle(blink, module, drive, journal, settings):
             errors.append("Local staging full: downloads paused until uploads free space")
             break
         partial = path.with_suffix(".part")
+        download_attempts += 1
         try:
             partial.unlink(missing_ok=True)
             clip = visible[key]

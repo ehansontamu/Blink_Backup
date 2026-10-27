@@ -3,6 +3,7 @@ import argparse
 import asyncio
 import atexit
 import concurrent.futures
+from contextlib import closing
 import json
 import secrets
 import sqlite3
@@ -213,7 +214,7 @@ def queue_data(search="", stage="", page=1):
     path = backup.STATE / "journal.sqlite3"
     if not path.exists():
         return {"jobs": [], "total": 0, "counts": {}}
-    with sqlite3.connect(path, timeout=3) as db:
+    with closing(sqlite3.connect(path, timeout=3)) as db:
         db.row_factory = sqlite3.Row
         if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='jobs'").fetchone():
             return {"jobs": [], "total": 0, "counts": {}}
@@ -340,7 +341,7 @@ def create_app(controller=None, port=8765):
     @app.post("/api/retry")
     def retry():
         key = request.get_json().get("key")
-        with sqlite3.connect(backup.STATE / "journal.sqlite3", timeout=10) as db:
+        with closing(sqlite3.connect(backup.STATE / "journal.sqlite3", timeout=10)) as db, db:
             clause, params = (" AND key=?", (key,)) if key else ("", ())
             result = db.execute("UPDATE jobs SET next_download=0,next_upload=0 WHERE stage IN ('download','upload')" + clause, params)
         return jsonify(ok=True, affected=result.rowcount)

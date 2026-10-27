@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import closing
 import json
 from pathlib import Path
 import re
@@ -97,7 +98,7 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(result["jobs"][0]["key"],"one")
         response = self.post("/api/retry",{"key":"one"})
         self.assertEqual(response.json["affected"],1)
-        with sqlite3.connect(backup.STATE / "journal.sqlite3") as db:
+        with closing(sqlite3.connect(backup.STATE / "journal.sqlite3")) as db:
             self.assertEqual(db.execute("SELECT next_download FROM jobs WHERE key='one'").fetchone()[0],0)
 
     def test_worker_start_requires_setup_and_stop_requests_graceful_exit(self):
