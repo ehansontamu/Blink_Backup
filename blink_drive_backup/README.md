@@ -1,4 +1,4 @@
-# Blink rolling backup to Google Drive
+# Blink Vault installation and operating guide
 
 For the continuation review, deployment fingerprints, real-transfer validation,
 and Apps Script/Cloud Run tradeoffs, see [PROJECT_REVIEW.md](PROJECT_REVIEW.md).
