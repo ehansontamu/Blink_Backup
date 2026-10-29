@@ -3,8 +3,8 @@
   "max_bytes": 10000000000,
   "poll_seconds": 60,
   "download_delay_seconds": 2,
-  "module_id": null,
-  "folder_id": null,
+  "module_id": "1116911",
+  "folder_id": "107RShVO0wA7TA95AVA1PlrepQSDQH8sm",
   "max_clips_per_cycle": 50,
   "max_staging_bytes": 10000000000,
   "min_free_disk_bytes": 1000000000
