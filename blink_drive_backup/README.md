@@ -244,7 +244,7 @@ the extracted live app folder or credential files to a public repository.
 
 ## Validation performed
 
-The package includes 41 offline tests for dashboard controls, worker supervision, sign-in state handling,
+The package includes 53 offline tests for dashboard controls, worker supervision, sign-in state handling,
 request protections, retention ordering, strict cloud size
 enforcement, deletion safeguards, independent retries, recovery across restarts,
 late/missing source clips, truncated downloads, Drive outages, local-buffer limits,
@@ -260,6 +260,32 @@ connections to avoid Windows file locks. All 41 offline tests passed; see the
 review for the validation environment and the remaining live-test requirements.
 
 Run offline tests: `python -m unittest discover -s tests -v`.
+
+### Update for TokenRefreshFailed after running for a while
+
+The October 29 update corrects a BlinkPy 0.26.0b0 runtime refresh mismatch:
+startup obtains OAuth v2 tokens, but the beta's original runtime refresh uses
+the legacy login flow when an access token expires. The compatibility patch now
+uses OAuth v2 for runtime refresh, keeps concurrent requests from refreshing the
+same rotating token twice, and retains credentials after failed refresh attempts.
+The worker saves rotated tokens immediately through BlinkPy's refresh callback.
+Atomic JSON saves briefly retry Windows file locks before reporting a persistent
+write failure.
+
+Stop the backup, wait for it to exit, close the dashboard process, and replace
+**both `backup.py` and `blink_compat.py`**. Preserve `settings.json`,
+`client_secret.json`, `.venv/`, and the entire `state/` directory. Restart using
+`START_DASHBOARD.bat`; no new dependency or routine reauthorization is required.
+If refresh still fails persistently, stop the worker and reconnect Blink in
+Connections, including any requested verification code.
+
+All 53 offline tests passed on October 29, including expired-token queries,
+rotation persistence, concurrent refreshes, malformed/failed responses, later
+retry recovery, and staged uploads during a failed manifest scan. The user
+reported working transfers and a dashboard with 79 clips tracked as uploaded.
+The new runtime refresh path has not been tested against their live account;
+confirm fresh scans and new uploads after the next token expiry. Zero queued
+clips during a failed scan does not mean Blink has no new recordings.
 
 References:
 - [Google Drive scopes](https://developers.google.com/workspace/drive/api/guides/api-specific-auth)

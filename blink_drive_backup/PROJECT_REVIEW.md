@@ -5,6 +5,49 @@ Windows installation first. If removing the PC dependency becomes a requirement,
 prototype a scheduled Python Cloud Run job before committing to an Apps Script
 rewrite. No migration or live-account actions were performed in this review.
 
+## October 29 update: long-running OAuth refresh
+
+The user reported working backups and provided a dashboard showing 79 clips
+tracked as uploaded, followed by `Blink manifest: TokenRefreshFailed` after the
+worker had been running for a while. This is evidence of operating transfers;
+the review environment has not independently inspected those Drive files.
+
+Inspection of the installed, pinned BlinkPy 0.26.0b0 source identified a runtime
+mismatch: `Auth.startup()` refreshes through OAuth v2, but `Auth.query()` calls
+the legacy `refresh_tokens()` path as the access token nears expiry. The app's
+compatibility patch now routes runtime refresh through the existing OAuth v2
+API, validates the response before modifying credentials, retains an existing
+refresh token when the response omits a replacement, and serializes concurrent
+refreshes. Transient failures retain the cached tokens and retry on subsequent
+manifest scans without starting repeated password/2FA logins.
+
+The worker installs a refresh callback to persist rotated tokens before the next
+network request. JSON replacement also retries short Windows file locks, up to
+five attempts with 0.75 seconds of total retry delay; persistent write failures
+remain visible. All 53 offline tests passed on October 29 in the previously
+documented validation environment. Live confirmation of the runtime refresh fix
+is still required after a deployed token expiry.
+
+Upgrade requires **both `backup.py` and `blink_compat.py`**. Stop the worker and
+dashboard process, replace those files, and restart `START_DASHBOARD.bat`.
+Preserve settings, credentials, and the complete `state/` directory. A small
+update ZIP is generated from an explicit allowlist of those two source files
+and installation notes; it contains no credentials, recordings, or runtime state.
+
+Normalized source fingerprints for this update:
+
+| File | SHA-256 |
+| --- | --- |
+| `backup.py` | `ef6901565ad03065d973c568f3f6a195f52ec6caeaabb8b77ede1d2f4b685a3c` |
+| `blink_compat.py` | `3453d6d82af52955d06c27f3d8f2889e37239df2923567d2358103a33f2ff4a9` |
+
+Compute fingerprints with UTF-8 text read through Python, as in the command
+below, changing the filename to check each file. Earlier sections retain the
+October 27 baseline and its fingerprints. A failed manifest scan does not mean
+there are no new Blink recordings: undiscovered clips cannot appear in pending
+counts. If refresh errors persist after deployment, stop the worker and reconnect
+Blink in Connections, completing 2FA if requested.
+
 ## What this checkout establishes
 
 The attached code requests local-storage clips through BlinkPy's internet API:

@@ -6,7 +6,7 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import backup
@@ -85,6 +85,48 @@ class BackupTests(unittest.TestCase):
         with patch.object(backup, "STATE", self.root):
             with self.assertRaisesRegex(RuntimeError, "sign-in required"):
                 asyncio.run(backup.blink_login(None, False))
+
+    def test_worker_refresh_callback_saves_rotated_tokens_between_cycles(self):
+        auth = SimpleNamespace(login_attributes={"token": "initial", "refresh_token": "initial-refresh"})
+        blink = SimpleNamespace(start=AsyncMock(return_value=True), available=True, refresh=AsyncMock())
+        with patch.object(backup, "STATE", self.root), patch("blinkpy.auth.Auth", return_value=auth), \
+                patch("blinkpy.blinkpy.Blink", return_value=blink):
+            backup.write_json(self.root / "blink_auth.json", {"username": "test@example.invalid"})
+            asyncio.run(backup.blink_login(None, False))
+            auth.login_attributes = {"token": "new", "refresh_token": "rotated-refresh"}
+            auth.callback()
+            self.assertEqual(backup.read_json(self.root / "blink_auth.json")["refresh_token"], "rotated-refresh")
+
+    def test_atomic_auth_save_retries_temporary_windows_file_lock(self):
+        path = self.root / "auth.json"
+        path.write_text('{"refresh_token": "old"}', encoding="utf-8")
+        replace = Path.replace
+        calls = []
+
+        def briefly_locked(temp, target):
+            calls.append(target)
+            if len(calls) <= 2:
+                self.assertEqual(backup.read_json(path)["refresh_token"], "old")
+                raise PermissionError("temporary file lock")
+            return replace(temp, target)
+
+        with patch.object(backup.sys, "platform", "win32"), patch.object(Path, "replace", briefly_locked), \
+                patch.object(backup.time, "sleep") as sleep:
+            backup.write_json(path, {"refresh_token": "new"})
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(sleep.call_count, 2)
+        self.assertEqual(backup.read_json(path)["refresh_token"], "new")
+
+    def test_atomic_auth_save_reports_persistent_lock_and_keeps_old_file(self):
+        path = self.root / "auth.json"
+        path.write_text('{"refresh_token": "old"}', encoding="utf-8")
+        with patch.object(backup.sys, "platform", "win32"), \
+                patch.object(Path, "replace", side_effect=PermissionError("persistent lock")) as replace, \
+                patch.object(backup.time, "sleep"):
+            with self.assertRaises(PermissionError):
+                backup.write_json(path, {"refresh_token": "new"})
+        self.assertEqual(replace.call_count, 5)
+        self.assertEqual(backup.read_json(path)["refresh_token"], "old")
 
     def test_large_old_incoming_does_not_evict_new_recordings(self):
         files = [item("new", 50, "2026-03")]

@@ -120,6 +120,25 @@ class RetryQueueTests(unittest.TestCase):
         self.assertEqual(result["counts"]["uploaded"], 2)
         self.assertFalse(list((self.root / "staging").glob("*.mp4")))
 
+    def test_token_refresh_failure_keeps_scan_failed_but_uploads_staged_clip(self):
+        from blinkpy.auth import TokenRefreshFailed
+        module = Module([Clip(1)])
+        self.drive.unavailable = True
+        self.cycle(module)
+        self.drive.unavailable = False
+
+        async def expired_manifest():
+            raise TokenRefreshFailed
+
+        module.update_local_storage_manifest = expired_manifest
+        report = self.cycle(module)
+        self.assertFalse(report["manifest_ok"])
+        self.assertTrue(report["drive_ok"])
+        self.assertEqual(report["counts"]["uploaded"], 1)
+        self.assertEqual(report["missing_from_latest_manifest"], 0)
+        self.assertIn("TokenRefreshFailed", report["cycle_errors"][0])
+        self.assertIn("reconnect Blink in Connections", report["cycle_errors"][0])
+
     def test_missing_source_is_unresolved_then_recovers(self):
         clip = Clip(1, fails=True)
         module = Module([clip])

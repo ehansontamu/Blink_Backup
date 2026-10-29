@@ -51,7 +51,8 @@ have separate retry counters and deadlines that survive restarts.
 
 Dependencies are listed in
 [requirements.txt](blink_drive_backup/requirements.txt). BlinkPy is pinned to
-`0.26.0b0`; the application includes an OAuth HTTP-202/2FA compatibility patch.
+`0.26.0b0`; the application includes OAuth HTTP-202/2FA and runtime token-refresh
+compatibility patches.
 
 ## Quick start
 
@@ -120,9 +121,11 @@ metadata. It still checks MP4 box boundaries and required container elements,
 then verifies the uploaded file's size and MD5. MP4 structural checks do not
 fully decode the video or detect every kind of frame corruption.
 
-**Live XR+ downloads and Google Drive uploads remain unconfirmed in the recorded
-project review.** The size-comparison fix and offline tests alone do not resolve
-that uncertainty. See the [deployment fingerprints and live-transfer checklist](blink_drive_backup/PROJECT_REVIEW.md)
+On October 29, 2026, the user reported working transfers and provided a dashboard
+showing 79 clips tracked as uploaded. This is useful operating evidence; playback
+and checksums have not been independently inspected in the review environment.
+The runtime token-refresh fix still needs confirmation after deployment and a
+subsequent token expiry. See the [deployment fingerprints and live-transfer checklist](blink_drive_backup/PROJECT_REVIEW.md)
 to identify the installed code and record transfer evidence.
 
 ## Configuration
@@ -207,6 +210,26 @@ Check the freshness of `checked_at` in the saved report. A failed scan is not an
 empty successful scan. Use the dashboard's individual or bulk retry control to
 clear cooldowns when appropriate; do not delete the journal to reset retries.
 
+### Blink manifest: TokenRefreshFailed
+
+The pinned BlinkPy beta uses OAuth v2 for startup but its original runtime path
+uses a legacy refresh flow when the access token expires. The application's
+compatibility patch routes that runtime refresh through OAuth v2, serializes
+concurrent refresh requests, and saves rotated tokens before the next request.
+Failed refresh attempts retain the previous credentials and retry on later scans.
+Short Windows file locks during atomic JSON replacement are retried with a
+bounded delay; persistent save errors are still reported.
+
+To apply this fix to an existing installation, stop the worker, close the
+dashboard process, replace **both `backup.py` and `blink_compat.py`**, and restart
+with `START_DASHBOARD.bat`. Preserve settings, credentials, and all of `state/`.
+If refresh errors persist, stop the worker and reconnect **Blink** through
+Connections, including 2FA if requested. Restarting the older version may restore
+scans temporarily but does not correct its runtime refresh path.
+
+A failed manifest scan can show zero pending clips even when new recordings
+exist on Blink: clips not yet discovered cannot appear in the local queue.
+
 For Windows Task Scheduler setup, see the
 [detailed installation guide](blink_drive_backup/README.md#automatic-startup-on-windows).
 Schedule one dashboard instance, keep the computer awake, and avoid running
@@ -251,16 +274,19 @@ From the application folder:
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-The latest recorded validation on **October 27, 2026** passed **41 offline tests**
+The latest recorded validation on **October 29, 2026** passed **53 offline tests**
 covering retention, deletion safeguards, queue persistence, independent retries,
 Drive outages, late/missing clips, duplicate recovery, MP4 validation, dashboard
 controls, and request protections. It also covered missing-source batch
-starvation and Windows SQLite connection cleanup.
+starvation, Windows SQLite connection cleanup, OAuth v2 runtime refresh,
+refresh-token rotation/persistence, concurrent refreshes, failed-refresh recovery,
+and atomic credential saves under temporary Windows file locks.
 
 That validation used existing dependencies rather than a clean package install.
 An earlier generated real MP4 passed structural validation while a truncated copy
-failed. These results do not establish live Blink authentication/refresh, actual
-XR+ downloads, Drive uploads, or unattended Windows startup. Details are recorded
+failed. These offline results do not independently establish live Blink
+authentication/refresh, XR+ downloads, Drive uploads, or unattended Windows startup.
+The runtime refresh patch requires a long-running deployed check. Details are recorded
 in [PROJECT_REVIEW.md](blink_drive_backup/PROJECT_REVIEW.md).
 
 ## Cloud hosting considerations
@@ -285,7 +311,7 @@ before replacing the Windows app.
 ```text
 blink_drive_backup/
   backup.py          Worker, authentication, queue, transfers, reconciliation
-  blink_compat.py    BlinkPy OAuth HTTP-202/2FA compatibility patch
+  blink_compat.py    BlinkPy OAuth HTTP-202/2FA and token-refresh patches
   retention.py       Oldest-first cloud retention planning
   web_app.py         Dashboard server and worker supervision
   web/               Dashboard templates, JavaScript, and CSS

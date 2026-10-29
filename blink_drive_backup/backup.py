@@ -42,7 +42,16 @@ def write_json(path, data):
     temp = path.with_suffix(".tmp")
     temp.write_text(json.dumps(data, indent=2), encoding="utf-8")
     temp.chmod(0o600)
-    temp.replace(path)
+    for attempt in range(5):
+        try:
+            temp.replace(path)
+            return
+        except PermissionError:
+            # Windows can briefly deny replacement while a scanner/reader has
+            # the destination open. Preserve the old file and retry atomically.
+            if sys.platform != "win32" or attempt == 4:
+                raise
+            time.sleep(.05 * 2 ** attempt)
 
 
 def read_json(path):
@@ -346,6 +355,9 @@ async def blink_login(session, interactive):
         raise RuntimeError("Blink sign-in required. Run --setup first.")
     blink = Blink(session=session)
     blink.auth = Auth(data, no_prompt=True, session=session)
+    # query() invokes this after a successful runtime refresh, before the next
+    # network request. Persist rotated tokens even if a later transfer fails.
+    blink.auth.callback = lambda: write_json(path, blink.auth.login_attributes)
     try:
         started = await blink.start()
     except BlinkTwoFARequiredError:
@@ -398,7 +410,10 @@ async def sync_cycle(blink, module, drive, journal, settings):
         journal.note_missing(visible)
         scan_ok = True
     except Exception as error:
-        errors.append("Blink manifest: " + type(error).__name__)
+        message = "Blink manifest: " + type(error).__name__
+        if type(error).__name__ == "TokenRefreshFailed":
+            message += "; will retry. If this persists, stop backup and reconnect Blink in Connections."
+        errors.append(message)
         LOG.error("Blink scan failed; staged clips can still upload. (%s)", type(error).__name__)
 
     # Import previous-version staged files and recover a crash between download,
