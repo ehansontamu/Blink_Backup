@@ -3,13 +3,13 @@ const $ = (selector) => document.querySelector(selector);
 const csrf = $('meta[name="csrf-token"]').content;
 let snapshot = null, page = 1, tab = 'overview', settingsLoaded = false, toastTimer;
 const titles = {
-  overview: ['Backup overview', 'Keep an eye on your clips, queue, and cloud storage.'],
+  overview: ['Backup overview', 'Keep an eye on your clips, queue, and synchronized storage.'],
   clips: ['Clip history', 'Every discovered clip has a place in the queue.'],
   activity: ['Activity log', 'See what the backup worker is doing on your server.'],
   settings: ['Backup settings', 'Choose your storage limits and transfer schedule.'],
   setup: ['Connections', 'Connect your accounts and choose your local storage.']
 };
-const labels = {download:'To download', upload:'To upload', uploaded:'Uploaded', expired:'Expired', aged_out:'Outside window', oversized:'Over limit'};
+const labels = {download:'To download', upload:'To copy', uploaded:'Backed up', expired:'Expired', aged_out:'Outside window', oversized:'Over limit'};
 const formatNumber = (n) => Number(n || 0).toLocaleString();
 const formatGB = (bytes) => (Number(bytes || 0) / 1e9).toLocaleString(undefined, {maximumFractionDigits:3}) + ' GB';
 function formatBytes(bytes){if(bytes>=1e9)return formatGB(bytes);if(bytes>=1e6)return (bytes/1e6).toFixed(1)+' MB';if(bytes>=1000)return (bytes/1000).toFixed(1)+' KB';return bytes+' B';}
@@ -55,12 +55,12 @@ function makeRows(target,jobs,history) {
 async function loadClips() {try{const result=await api('/api/clips?'+new URLSearchParams({page,search:$('#clip-search').value,stage:$('#clip-filter').value}));makeRows($('#clips-body'),result.jobs,true);$('#clip-total').textContent=formatNumber(result.total)+' clips';$('#page-number').textContent='Page '+page;$('#prev-page').disabled=page<=1;$('#next-page').disabled=page*50>=result.total;}catch(error){toast(error.message,true);}}
 async function loadRecent(){const result=await api('/api/clips');makeRows($('#recent-body'),result.jobs.slice(0,6),false);}
 async function loadLogs(){try{const result=await api('/api/logs');const parent=$('#logs');parent.replaceChildren();if(!result.logs.length){const p=document.createElement('p');p.className='muted';p.textContent='No activity yet. Start the backup to see its progress here.';parent.append(p);}result.logs.forEach(log=>{const title=document.createElement('h3');title.textContent=log.name==='backup.log'?'Transfer activity':'Startup & connection messages';const pre=document.createElement('pre');pre.textContent=log.lines.join('\n')||'No messages yet.';parent.append(title,pre);});}catch(error){toast(error.message,true);}}
-function fillSettings(settings) {const form=$('#settings-form');form.elements.cloud_gb.value=settings.max_bytes/1e9;form.elements.local_gb.value=(settings.max_staging_bytes??1e10)/1e9;['poll_seconds','download_delay_seconds','max_clips_per_cycle'].forEach(key=>form.elements[key].value=settings[key]);$('#settings-folder').value=settings.folder_name||'Blink Rolling Backup';settingsLoaded=true;}
+function fillSettings(settings) {const form=$('#settings-form');form.elements.cloud_gb.value=settings.max_bytes/1e9;form.elements.local_gb.value=(settings.max_staging_bytes??1e10)/1e9;['poll_seconds','download_delay_seconds','max_clips_per_cycle'].forEach(key=>form.elements[key].value=settings[key]);$('#settings-folder').value=settings.destination_path||'';settingsLoaded=true;}
 function renderStatus(s) {
   snapshot=s;const count=s.counts||{},r=s.report||{},w=s.worker;
   const pending=(count.download||0)+(count.upload||0),missing=r.missing_from_latest_manifest||0;
   $('#count-uploaded').textContent=formatNumber(count.uploaded);$('#count-download').textContent=formatNumber(count.download);$('#count-upload').textContent=formatNumber(count.upload);$('#count-missing').textContent=formatNumber(missing);$('#nav-pending').textContent=formatNumber(pending);
-  $('#cloud-used').textContent=r.drive_bytes==null?'—':formatGB(r.drive_bytes);$('#cloud-limit').textContent=' / '+formatGB(s.settings.max_bytes);$('#cloud-bar').style.width=Math.min(100,100*(r.drive_bytes||0)/s.settings.max_bytes)+'%';
+  $('#cloud-used').textContent=r.folder_bytes==null?'—':formatGB(r.folder_bytes);$('#cloud-limit').textContent=' / '+formatGB(s.settings.max_bytes);$('#cloud-bar').style.width=Math.min(100,100*(r.folder_bytes||0)/s.settings.max_bytes)+'%';
   $('#local-used').textContent=formatGB(s.staging_bytes);$('#local-limit').textContent=' / '+formatGB(s.settings.max_staging_bytes??1e10);$('#local-bar').style.width=Math.min(100,100*s.staging_bytes/(s.settings.max_staging_bytes??1e10))+'%';
   $('#last-check').textContent=r.checked_at?'Last scan '+date(r.checked_at):'No scan yet';
   const state=w.stopping?'Stopping':w.running?'Running':w.restart_enabled?'Restarting':'Stopped';$('#worker-state').textContent=state;
@@ -68,7 +68,7 @@ function renderStatus(s) {
   $('#setup-banner').classList.toggle('hidden',s.configured);
   const health=$('.health-card');health.classList.remove('warning','danger');let title,description,icon='✓';
   const stale=r.checked_at&&Date.now()/1000-r.checked_at>Math.max(300,s.settings.poll_seconds*3);
-  if(!s.configured){title='Ready for your first backup';description='Connect Google Drive and Blink, then select your Sync Module.';icon='⌁';}
+  if(!s.configured){title='Ready for your first backup';description='Configure the synced folder and Blink, then select your Sync Module.';icon='⌁';}
   else if(w.stopping){title='Finishing the current operation';description='The worker will stop safely between transfers. Pending clips remain queued.';}
   else if(!w.running){title=w.restart_enabled?'Worker will retry automatically':'Backup is stopped';description=w.restart_enabled?'The worker exited. Check Activity for sign-in or connection errors; another start is scheduled.':'Start the worker to scan for new clips and resume pending transfers.';health.classList.add('warning');icon='Ⅱ';}
   else if(missing||(r.cycle_errors||[]).length||r.manifest_ok===false){title='Some backups need attention';description=missing?missing+' known clips are absent from Blink’s latest list. See Clip history for unresolved items.':(r.cycle_errors||[]).join(' · ')||'The latest Blink scan failed. The worker will retry.';health.classList.add('danger');icon='!';}
@@ -77,15 +77,14 @@ function renderStatus(s) {
   else if(!r.checked_at){title='Connecting to your accounts';description='The first scan is starting. Connection messages appear in Activity.';icon='…';}
   else{title='No pending transfers';description='All discovered eligible clips are processed. The worker is watching for new recordings.';}
   $('#health-title').textContent=title;$('#health-description').textContent=description;$('#health-icon').textContent=icon;
-  const driveLink=$('#drive-link');driveLink.classList.toggle('hidden',!s.settings.folder_id);if(s.settings.folder_id)driveLink.href='https://drive.google.com/drive/folders/'+encodeURIComponent(s.settings.folder_id);
   if(!settingsLoaded)fillSettings(s.settings);
   $('#settings-hint').textContent=w.running?'Stop the worker before saving changes.':'Changes take effect on the next worker start.';$('#save-settings').disabled=w.running;
-  $('#google-status').textContent=s.auth.google_saved?(s.settings.folder_id?'Authorization saved · folder selected':'Authorization saved · check folder'):'Not connected';
+  $('#folder-status').textContent=s.settings.destination_path?'Configured for Drive for desktop':'Not configured';
+  $('#folder-path').textContent=s.settings.destination_path||'Not configured';
   $('#blink-status').textContent=s.auth.needs_code?'Verification code required':s.auth.blink_saved?'Credentials saved on this computer':'Not connected';
   $('#blink-code-form').classList.toggle('hidden',!s.auth.needs_code);$('#blink-form').classList.toggle('hidden',s.auth.needs_code);
   $('#module-current').textContent=s.settings.module_id?'Selected module ID: '+s.settings.module_id:'No module selected';
   const available=s.auth.modules;if(available.length){const select=$('#module-select'),signature=JSON.stringify(available);if(select.dataset.signature!==signature){select.replaceChildren();available.forEach(m=>{const option=document.createElement('option');option.value=m.id;option.textContent=m.name+' · '+m.id;select.append(option);});select.dataset.signature=signature;if(available.some(m=>m.id===s.settings.module_id))select.value=s.settings.module_id;}}
-  if(!s.google_pending)$('#google-auth-link').classList.add('hidden');
   document.querySelectorAll('[data-page="setup"] input,[data-page="setup"] select,[data-page="setup"] button').forEach(el=>el.disabled=w.running);
   document.querySelectorAll('.retry-all').forEach(el=>el.disabled=!pending);
 }
@@ -93,10 +92,7 @@ async function refresh(){try{const s=await api('/api/status');renderStatus(s);$(
 $('#worker-toggle').addEventListener('click',event=>action(event.currentTarget,async()=>{const stop=snapshot?.worker.running||snapshot?.worker.restart_enabled;await api(stop?'/api/stop':'/api/start',{});toast(stop?'Stop requested. The current transfer may take a moment.':'Backup worker started.');}));
 document.querySelectorAll('.retry-all').forEach(button=>button.addEventListener('click',()=>action(button,async()=>{const r=await api('/api/retry',{});toast(r.affected+' pending clips scheduled for the next cycle.');})));
 let searchTimer;$('#clip-search').addEventListener('input',()=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>{page=1;loadClips();},250);});$('#clip-filter').addEventListener('change',()=>{page=1;loadClips();});$('#prev-page').addEventListener('click',()=>{page--;loadClips();});$('#next-page').addEventListener('click',()=>{page++;loadClips();});$('#refresh-logs').addEventListener('click',loadLogs);
-$('#settings-form').addEventListener('submit',event=>{event.preventDefault();const form=event.currentTarget;action($('#save-settings'),async()=>{await api('/api/settings',{max_bytes:Math.round(Number(form.elements.cloud_gb.value)*1e9),max_staging_bytes:Math.round(Number(form.elements.local_gb.value)*1e9),poll_seconds:Number(form.elements.poll_seconds.value),download_delay_seconds:Number(form.elements.download_delay_seconds.value),max_clips_per_cycle:Number(form.elements.max_clips_per_cycle.value)});toast('Settings saved. They apply the next time the worker starts.');});});
-$('#google-client').addEventListener('change',async event=>{const input=event.target,file=input.files[0];if(!file)return;try{if(file.size>100000)throw new Error('Choose the small JSON client file downloaded from Google Cloud.');const client=JSON.parse(await file.text());await api('/api/setup/google-client',{client});toast('Google Desktop client saved. You can now connect Drive.');await refresh();}catch(error){toast(error.message,true);}finally{input.value='';}});
-$('#google-connect').addEventListener('click',event=>action(event.currentTarget,async()=>{const result=await api('/api/setup/google',{});const link=$('#google-auth-link');link.href=result.url;link.classList.remove('hidden');toast('Select “Continue to Google” to authorize your account in a new tab.');}));
-$('#google-folder').addEventListener('click',event=>action(event.currentTarget,async()=>{await api('/api/setup/google-folder',{});toast('Drive folder is ready.');}));
+$('#settings-form').addEventListener('submit',event=>{event.preventDefault();const form=event.currentTarget;action($('#save-settings'),async()=>{await api('/api/settings',{max_bytes:Math.round(Number(form.elements.cloud_gb.value)*1e9),max_staging_bytes:Math.round(Number(form.elements.local_gb.value)*1e9),poll_seconds:Number(form.elements.poll_seconds.value),download_delay_seconds:Number(form.elements.download_delay_seconds.value),max_clips_per_cycle:Number(form.elements.max_clips_per_cycle.value),destination_path:form.elements.destination_path.value.trim()});toast('Settings saved. They apply the next time the worker starts.');});});
 $('#blink-form').addEventListener('submit',event=>{event.preventDefault();const form=event.currentTarget;action(form.querySelector('button'),async()=>{try{const result=await api('/api/setup/blink',{email:form.elements.email.value,password:form.elements.password.value});toast(result.needs_code?'Enter the verification code Blink sent you.':'Blink connected. Select your Sync Module below.');}finally{form.elements.password.value='';}});});
 $('#blink-code-form').addEventListener('submit',event=>{event.preventDefault();const form=event.currentTarget;action(form.querySelector('button'),async()=>{await api('/api/setup/blink-code',{code:form.elements.code.value});form.elements.code.value='';toast('Blink verified. Choose your Sync Module below.');});});
 $('#load-modules').addEventListener('click',event=>action(event.currentTarget,async()=>{const result=await api('/api/setup/modules',{});toast(result.needs_code?'Blink needs verification again. Enter the code above.':result.modules.length+' modules with local storage found.');}));

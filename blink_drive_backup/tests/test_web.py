@@ -1,6 +1,5 @@
 import asyncio
 from contextlib import closing
-import json
 from pathlib import Path
 import re
 import sqlite3
@@ -23,8 +22,10 @@ class DashboardTests(unittest.TestCase):
         self.state_patch = patch.object(backup, "STATE", self.root / "state")
         self.root_patch.start()
         self.state_patch.start()
-        backup.write_json(self.root / "settings.json", {"folder_name": "Blink Rolling Backup",
-            "folder_id": None, "module_id": None, "max_bytes": 10_000_000_000,
+        self.destination = self.root / "Blink Backup"
+        self.destination.mkdir()
+        backup.write_json(self.root / "settings.json", {"destination_path": str(self.destination),
+            "module_id": None, "max_bytes": 10_000_000_000,
             "max_staging_bytes": 10_000_000_000, "poll_seconds": 60,
             "download_delay_seconds": 2, "max_clips_per_cycle": 50})
         self.controller = web_app.Controller()
@@ -66,23 +67,23 @@ class DashboardTests(unittest.TestCase):
 
     def test_status_does_not_expose_saved_passwords_or_tokens(self):
         backup.write_json(backup.STATE / "blink_auth.json", {"password":"PRIVATE-PASSWORD", "token":"PRIVATE-TOKEN"})
-        backup.write_json(backup.STATE / "google_token.json", {"refresh_token":"PRIVATE-REFRESH"})
         response = self.get("/api/status")
         self.assertEqual(response.status_code,200)
         self.assertNotIn("PRIVATE", response.text)
         self.assertTrue(response.json["auth"]["blink_saved"])
         self.assertEqual(self.get("/state/blink_auth.json").status_code,404)
 
-    def test_settings_validate_and_keep_existing_folder_identity(self):
+    def test_settings_validate_and_keep_existing_destination(self):
         settings = backup.read_json(self.root / "settings.json")
-        data = {k:settings[k] for k in ["max_bytes","max_staging_bytes","poll_seconds","download_delay_seconds","max_clips_per_cycle"]}
+        data = {k:settings[k] for k in ["max_bytes","max_staging_bytes","poll_seconds","download_delay_seconds","max_clips_per_cycle","destination_path"]}
         bad = dict(data,poll_seconds=1)
         self.assertEqual(self.post("/api/settings",bad).status_code,400)
         data["max_bytes"] = 5_000_000_000
         self.assertEqual(self.post("/api/settings",data).status_code,200)
         saved = backup.read_json(self.root / "settings.json")
         self.assertEqual(saved["max_bytes"],5_000_000_000)
-        self.assertIn("folder_id",saved)
+        self.assertEqual(saved["destination_path"], str(self.destination))
+        self.assertEqual(self.post("/api/settings", dict(data, destination_path="relative" )).status_code, 400)
         with patch.object(self.controller,"busy",return_value=True):
             self.assertEqual(self.post("/api/settings",data).status_code,400)
 
@@ -108,19 +109,6 @@ class DashboardTests(unittest.TestCase):
         self.assertTrue(backup.stop_requested())
         self.assertFalse(self.controller.desired)
 
-    def test_google_callback_rejects_unmatched_state_without_contacting_google(self):
-        self.controller.oauth = {"state":"expected", "started":web_app.time.time(), "flow":Mock()}
-        response = self.get("/oauth/callback?state=wrong&code=secret-code")
-        self.assertEqual(response.status_code,400)
-        self.controller.oauth["flow"].fetch_token.assert_not_called()
-
-    def test_google_desktop_client_upload_is_validated_and_not_returned(self):
-        invalid = {"installed":{"client_id":"test","client_secret":"secret","auth_uri":"https://evil.example/auth","token_uri":"https://evil.example/token"}}
-        self.assertEqual(self.post("/api/setup/google-client",{"client":invalid}).status_code,400)
-        valid = {"installed":{"client_id":"test","client_secret":"LOCAL-SECRET","auth_uri":"https://accounts.google.com/o/oauth2/auth","token_uri":"https://oauth2.googleapis.com/token"}}
-        self.assertEqual(self.post("/api/setup/google-client",{"client":valid}).status_code,200)
-        self.assertNotIn("LOCAL-SECRET", self.get("/api/status").text)
-
     def test_module_selection_must_match_discovered_module(self):
         fake = Mock()
         fake.modules = [{"id":"123", "name":"XR+"}]
@@ -135,20 +123,6 @@ class DashboardTests(unittest.TestCase):
         start = web_app.time.monotonic()
         asyncio.run(backup.interruptible_sleep(600))
         self.assertLess(web_app.time.monotonic() - start,1)
-
-    def test_google_callback_saves_authorization_and_returns_to_dashboard(self):
-        flow = Mock()
-        flow.credentials.to_json.return_value = json.dumps({"refresh_token":"SAVED-SECRET"})
-        self.controller.oauth = {"state":"expected", "started":web_app.time.time(), "flow":flow}
-        with self.client.session_transaction(base_url=self.origin) as cookie:
-            cookie["oauth_state"] = "expected"
-        with patch.object(backup,"google_service"), patch.object(backup,"ensure_folder") as folder:
-            result = self.get("/?state=expected&code=test-code")
-        self.assertEqual(result.status_code,302)
-        self.assertEqual(result.headers["Location"],"/#setup")
-        self.assertEqual(backup.read_json(backup.STATE / "google_token.json")["refresh_token"],"SAVED-SECRET")
-        self.assertIsNone(self.controller.oauth)
-        folder.assert_called_once()
 
     def test_blink_setup_keeps_session_for_two_factor_verification(self):
         from blinkpy.auth import BlinkTwoFARequiredError

@@ -4,7 +4,6 @@ import asyncio
 import atexit
 import concurrent.futures
 from contextlib import closing
-import json
 import secrets
 import sqlite3
 import subprocess
@@ -13,7 +12,6 @@ import threading
 import time
 import webbrowser
 from pathlib import Path
-from urllib.parse import urlparse
 
 from flask import Flask, abort, jsonify, redirect, render_template, request, session
 from filelock import FileLock, Timeout
@@ -115,7 +113,6 @@ class Controller:
         self.next_restart = 0
         self.last_exit = None
         self.blink_setup = None
-        self.oauth = None
         self.shutdown = threading.Event()
 
     def setup(self):
@@ -138,9 +135,9 @@ class Controller:
 
     def configured(self):
         s = backup.read_json(backup.ROOT / "settings.json")
-        return bool(s.get("folder_id") and s.get("module_id") and
-                    (backup.STATE / "google_token.json").exists() and
-                    (backup.STATE / "blink_auth.json").exists())
+        folder = Path(s.get("destination_path", "")).expanduser()
+        return bool(folder.is_absolute() and folder.is_dir() and s.get("module_id")
+                    and (backup.STATE / "blink_auth.json").exists())
 
     def start(self):
         with self.lock:
@@ -148,10 +145,8 @@ class Controller:
                 raise ValueError("A backup is already running.")
             if self.blink_setup and self.blink_setup.waiting:
                 raise ValueError("Finish Blink verification first.")
-            if self.oauth:
-                raise ValueError("Finish or cancel Google sign-in first.")
             if not self.configured():
-                raise ValueError("Connect Google Drive and Blink, then select your Sync Module in Setup.")
+                raise ValueError("Configure the synced backup folder and Blink, then select your Sync Module in Setup.")
             (backup.STATE / "stop.request").unlink(missing_ok=True)
             console = backup.STATE / "worker_console.log"
             if console.exists() and console.stat().st_size > 1_000_000:
@@ -299,8 +294,6 @@ def create_app(controller=None, port=8765):
 
     @app.get("/")
     def home():
-        if request.args.get("state") or request.args.get("code") or request.args.get("error"):
-            return google_callback()
         session.setdefault("csrf", secrets.token_urlsafe(32))
         return render_template("index.html", csrf=session["csrf"])
 
@@ -308,16 +301,17 @@ def create_app(controller=None, port=8765):
     def status():
         settings = backup.read_json(backup.ROOT / "settings.json")
         report = safe_read(backup.STATE / "status.json", {})
+        # Reports from the retired Google API destination must not keep showing
+        # a stale OAuth error after upgrading to the synced-folder backend.
+        if report and "folder_ok" not in report:
+            report = {}
         queue = queue_data()
         staged = sum(p.stat().st_size for p in (backup.STATE / "staging").glob("*.mp4"))
         return jsonify(worker=controller.worker_state(), configured=controller.configured(),
             settings=settings, report=report, counts=queue["counts"], staging_bytes=staged,
-            auth={"google_saved": (backup.STATE / "google_token.json").exists(),
-                  "blink_saved": (backup.STATE / "blink_auth.json").exists(),
-                  "client_saved": (backup.ROOT / "client_secret.json").exists(),
+            auth={"blink_saved": (backup.STATE / "blink_auth.json").exists(),
                   "needs_code": bool(controller.blink_setup and controller.blink_setup.waiting),
-                  "modules": controller.blink_setup.modules if controller.blink_setup else []},
-            google_pending=bool(controller.oauth))
+                  "modules": controller.blink_setup.modules if controller.blink_setup else []})
 
     @app.get("/api/clips")
     def clips():
@@ -359,71 +353,13 @@ def create_app(controller=None, port=8765):
                 if not isinstance(value, int) or isinstance(value, bool) or not low <= value <= high:
                     raise ValueError(f"{key} must be an integer between {low} and {high}.")
                 settings[key] = value
+            destination = Path(str(data.get("destination_path", ""))).expanduser()
+            if not destination.is_absolute() or not destination.is_dir():
+                raise ValueError("destination_path must be an existing absolute folder.")
+            settings["destination_path"] = str(destination)
+            settings.pop("folder_id", None)
+            settings.pop("folder_name", None)
             backup.write_json(backup.ROOT / "settings.json", settings)
-        return jsonify(ok=True)
-
-    @app.post("/api/setup/google-client")
-    def google_client():
-        with controller.lock:
-            controller.require_stopped()
-            data = request.get_json().get("client")
-            config = data.get("installed", {}) if isinstance(data, dict) else {}
-            if not all(config.get(k) for k in ("client_id", "client_secret", "auth_uri", "token_uri")):
-                raise ValueError("Choose a Google Desktop app OAuth client JSON file.")
-            for name in ("auth_uri", "token_uri"):
-                url = urlparse(config[name])
-                if url.scheme != "https" or url.hostname not in {"accounts.google.com", "oauth2.googleapis.com"}:
-                    raise ValueError("The OAuth client must use Google's official authentication endpoints.")
-            backup.write_json(backup.ROOT / "client_secret.json", data)
-            controller.oauth = None
-        return jsonify(ok=True)
-
-    @app.post("/api/setup/google")
-    def google_begin():
-        from google_auth_oauthlib.flow import Flow
-        with controller.lock:
-            controller.require_stopped()
-            path = backup.ROOT / "client_secret.json"
-            if not path.exists():
-                raise ValueError("Choose your Google Desktop OAuth client JSON file first.")
-            flow = Flow.from_client_secrets_file(str(path), scopes=backup.SCOPES,
-                redirect_uri=origin + "/", autogenerate_code_verifier=True)
-            url, state = flow.authorization_url(access_type="offline", prompt="consent")
-            controller.oauth = {"flow": flow, "state": state, "started": time.time()}
-            session["oauth_state"] = state
-        return jsonify(url=url)
-
-    @app.get("/oauth/callback")
-    def google_callback():
-        with controller.lock:
-            pending = controller.oauth
-            state = request.args.get("state", "")
-            if (not pending or time.time() - pending["started"] > 600 or not state
-                    or not secrets.compare_digest(state, pending["state"])
-                    or not secrets.compare_digest(state, session.get("oauth_state", ""))):
-                raise ValueError("Google sign-in expired or did not match. Return to Setup and try again.")
-            controller.require_stopped()
-            try:
-                if request.args.get("error"):
-                    raise ValueError("Google authorization was declined. You can try again in Setup.")
-                code = request.args.get("code")
-                if not code:
-                    raise ValueError("Google did not provide an authorization code.")
-                pending["flow"].fetch_token(code=code, timeout=120)
-                backup.write_json(backup.STATE / "google_token.json", json.loads(pending["flow"].credentials.to_json()))
-                service = backup.google_service(False)
-                backup.ensure_folder(service, backup.read_json(backup.ROOT / "settings.json"), True)
-            finally:
-                controller.oauth = None
-                session.pop("oauth_state", None)
-        return redirect("/#setup")
-
-    @app.post("/api/setup/google-folder")
-    def google_folder():
-        with controller.lock:
-            controller.require_stopped()
-            service = backup.google_service(False)
-            backup.ensure_folder(service, backup.read_json(backup.ROOT / "settings.json"), True)
         return jsonify(ok=True)
 
     @app.post("/api/setup/blink")
@@ -464,7 +400,6 @@ def create_app(controller=None, port=8765):
     @app.post("/api/setup/cancel")
     def cancel():
         with controller.lock:
-            controller.oauth = None
             if controller.blink_setup:
                 controller.blink_setup.call(controller.blink_setup.close())
         return jsonify(ok=True)

@@ -105,7 +105,7 @@ class RetryQueueTests(unittest.TestCase):
         self.assertEqual(clip.calls, 2)
         self.assertTrue(self.journal.seen(backup.clip_key(module, clip)))
 
-    def test_drive_outage_keeps_ingesting_source_clips(self):
+    def test_destination_outage_keeps_ingesting_source_clips(self):
         a, b = Clip(1), Clip(2)
         module = Module([a])
         self.drive.unavailable = True
@@ -133,7 +133,7 @@ class RetryQueueTests(unittest.TestCase):
         module.update_local_storage_manifest = expired_manifest
         report = self.cycle(module)
         self.assertFalse(report["manifest_ok"])
-        self.assertTrue(report["drive_ok"])
+        self.assertTrue(report["folder_ok"])
         self.assertEqual(report["counts"]["uploaded"], 1)
         self.assertEqual(report["missing_from_latest_manifest"], 0)
         self.assertIn("TokenRefreshFailed", report["cycle_errors"][0])
@@ -242,16 +242,14 @@ class RetryQueueTests(unittest.TestCase):
         self.assertTrue(self.journal.seen(backup.clip_key(module, late)))
         self.assertEqual(len(self.drive.files), 2)
 
-    def test_missing_remote_backup_is_queued_for_recovery(self):
+    def test_historical_upload_absent_from_new_destination_is_not_duplicated(self):
         clip = Clip(1)
         module = Module([clip])
         self.cycle(module)
         self.drive.files.clear()
         self.cycle(module)
-        self.assertFalse(self.journal.seen(backup.clip_key(module, clip)))
-        self.cycle(module)
         self.assertTrue(self.journal.seen(backup.clip_key(module, clip)))
-        self.assertEqual(clip.calls, 2)
+        self.assertEqual(clip.calls, 1)
 
     def test_intentional_retention_expiry_is_not_requeued(self):
         clip = Clip(1)
